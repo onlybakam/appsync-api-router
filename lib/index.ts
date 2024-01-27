@@ -40,13 +40,17 @@ import { IServerlessCluster } from 'aws-cdk-lib/aws-rds'
 import { ISecret } from 'aws-cdk-lib/aws-secretsmanager'
 import { IEventBus } from 'aws-cdk-lib/aws-events'
 import { IDomain as IOpenSearchDomain } from 'aws-cdk-lib/aws-opensearchservice'
-import { AppSyncJsFunctionProps, AppSyncJsResolverProps } from './types'
+import {
+  AppSyncJsFunctionProps,
+  AppSyncJsPipelineResolverProps,
+  AppSyncJsResolverProps,
+} from './types'
 
 const DEFAULT_PIPELINE_RESOLVER_CODE = `
 export function request(ctx) { return {} }
 export function response(ctx) { return ctx.prev.result }
-
 `.trim()
+
 export interface AppsyncApiRouterProps {
   /**
    * the directory to load resources from
@@ -105,8 +109,6 @@ export interface AppsyncApiRouterProps {
 }
 
 export class AppsyncApiRouter extends GraphqlApi {
-  //Construct {
-  // readonly api: GraphqlApi
   private baseDir: string
   private pipelineResolvers: Record<
     string,
@@ -130,12 +132,6 @@ export class AppsyncApiRouter extends GraphqlApi {
     })
     this.baseDir = baseDir
     this.prepResolverDirectory()
-
-    // this.api = new GraphqlApi(this, 'appsync-graphql-api', {
-    //   name: apiName,
-    //   definition: Definition.fromFile(path.join(base, 'schema.graphql')),
-    //   ...restOfProps,
-    // })
   }
 
   private prepResolverDirectory() {
@@ -143,7 +139,7 @@ export class AppsyncApiRouter extends GraphqlApi {
     this.resolverEntries = fs.readdirSync(folder, { withFileTypes: true, recursive: true })
   }
 
-  private loadResolversForDataSource(dataSource: BaseDataSource) {
+  private loadResolversForDataSource<T extends BaseDataSource>(dataSource: T) {
     const fileFilter = /([_A-Za-z][_0-9A-Za-z]*)\.([_A-Za-z][_0-9A-Za-z]*)\.\[(\w+)\]\.[ts|js]/
     const dirFilter = /([_A-Za-z][_0-9A-Za-z]*)\.([_A-Za-z][_0-9A-Za-z]*)/
 
@@ -246,7 +242,8 @@ export class AppsyncApiRouter extends GraphqlApi {
       if (match) {
         const [, order, name, dataSourceName] = match
         if (dataSourceName === dataSource.name) {
-          const fn = dataSource.createJsFunction(
+          const fn = this.createJsFunction(
+            dataSource,
             `${typeName}_${fieldName}_${dataSourceName}_${name}`,
             {
               functionFile: path.join(entry.path, entry.name),
@@ -256,7 +253,7 @@ export class AppsyncApiRouter extends GraphqlApi {
         }
       }
     })
-    return fns.sort((a, b) => a.order - b.order)
+    return fns //.sort((a, b) => a.order - b.order)
   }
 
   /**
@@ -334,6 +331,36 @@ export class AppsyncApiRouter extends GraphqlApi {
     })
   }
 
+  /**
+   * creates a new Js pipeline resolver for this datasource and API using the given properties
+   */
+  public createJsPipelineResolver(
+    typeName: string,
+    fieldName: string,
+    props?: AppSyncJsPipelineResolverProps
+  ): Resolver {
+    const { resolverFile, resolverDir, bundling, functions, ...resolverProps } = props ?? {}
+    if (resolverFile && resolverDir) {
+      throw new Error('Only one of resolverFile or resolverDir is allowed.')
+    }
+
+    const entryFile = findResolverEntry(typeName, fieldName, resolverFile, resolverDir, true)
+    const resolver = new Resolver(this, getResolverName(typeName, fieldName), {
+      api: this,
+      typeName,
+      fieldName,
+      runtime: FunctionRuntime.JS_1_0_0,
+      code: doBundling(entryFile, bundling ?? {}),
+      ...resolverProps,
+    })
+    const node = resolver.node.defaultChild as CfnResolver
+    node.kind = 'PIPELINE'
+    node.pipelineConfig = {
+      functions: (functions ?? []).map((f) => f.functionId),
+    }
+    return resolver
+  }
+
   // overloaded adders below
 
   /**
@@ -344,7 +371,7 @@ export class AppsyncApiRouter extends GraphqlApi {
    */
   public addNoneDataSource(id: string, options?: DataSourceOptions): NoneDataSource {
     const ds = super.addNoneDataSource(id, options)
-    return this.loadResolversForDataSource(ds) as NoneDataSource
+    return this.loadResolversForDataSource(ds) // as NoneDataSource
   }
 
   /**
@@ -360,7 +387,7 @@ export class AppsyncApiRouter extends GraphqlApi {
     options?: HttpDataSourceOptions
   ): HttpDataSource {
     const ds = super.addHttpDataSource(id, endpoint, options)
-    return this.loadResolversForDataSource(ds) as HttpDataSource
+    return this.loadResolversForDataSource(ds) // as HttpDataSource
   }
 
   /**
@@ -376,7 +403,7 @@ export class AppsyncApiRouter extends GraphqlApi {
     options?: DataSourceOptions
   ): DynamoDbDataSource {
     const ds = super.addDynamoDbDataSource(id, table, options)
-    return this.loadResolversForDataSource(ds) as DynamoDbDataSource
+    return this.loadResolversForDataSource(ds) // as DynamoDbDataSource
   }
 
   /**
@@ -392,7 +419,7 @@ export class AppsyncApiRouter extends GraphqlApi {
     options?: DataSourceOptions
   ): LambdaDataSource {
     const ds = super.addLambdaDataSource(id, lambdaFunction, options)
-    return this.loadResolversForDataSource(ds) as LambdaDataSource
+    return this.loadResolversForDataSource(ds) // as LambdaDataSource
   }
 
   /**
@@ -411,7 +438,7 @@ export class AppsyncApiRouter extends GraphqlApi {
     options?: DataSourceOptions
   ): RdsDataSource {
     const ds = super.addRdsDataSource(id, serverlessCluster, secretStore, databaseName, options)
-    return this.loadResolversForDataSource(ds) as RdsDataSource
+    return this.loadResolversForDataSource(ds) // as RdsDataSource
   }
 
   /**
@@ -426,7 +453,7 @@ export class AppsyncApiRouter extends GraphqlApi {
     options?: DataSourceOptions
   ): EventBridgeDataSource {
     const ds = super.addEventBridgeDataSource(id, eventBus, options)
-    return this.loadResolversForDataSource(ds) as EventBridgeDataSource
+    return this.loadResolversForDataSource(ds) // as EventBridgeDataSource
   }
 
   /**
@@ -442,6 +469,6 @@ export class AppsyncApiRouter extends GraphqlApi {
     options?: DataSourceOptions
   ): OpenSearchDataSource {
     const ds = super.addOpenSearchDataSource(id, domain, options)
-    return this.loadResolversForDataSource(ds) as OpenSearchDataSource
+    return this.loadResolversForDataSource(ds) // as OpenSearchDataSource
   }
 }
