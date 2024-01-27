@@ -2,7 +2,9 @@ import { spawnSync, SpawnSyncOptions } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-// import { Code } from './code';
+import { AppSyncBundlingOptions } from './types'
+import { Code } from 'aws-cdk-lib/aws-appsync'
+import { AssetHashType, BundlingOutput, DockerImage, FileSystem } from 'aws-cdk-lib/core'
 // import { AppSyncBundlingOptions } from './types';
 // import { AssetHashType, BundlingOutput, DockerImage, FileSystem } from '../../core';
 
@@ -203,4 +205,52 @@ export function findFunctionEntry(
   }
 
   throw new Error(`Cannot find function file ${tsFile}, or ${jsFile}.`)
+}
+
+export function doBundling(entryFile: string, options: AppSyncBundlingOptions) {
+  const { excludeSourcemap } = options
+  const sourceMap = excludeSourcemap ? '' : '--sourcemap=inline --sources-content=false'
+
+  return Code.fromAsset('.', {
+    assetHashType: AssetHashType.CUSTOM,
+    assetHash: FileSystem.fingerprint(entryFile, { extraHash: JSON.stringify(options) }),
+    bundling: {
+      image: DockerImage.fromRegistry('dummy'), // only local with esbuild
+      outputType: BundlingOutput.SINGLE_FILE,
+      local: {
+        tryBundle(outputDir) {
+          const osPlatform = os.platform()
+          exec(
+            osPlatform === 'win32' ? 'cmd' : 'bash',
+            [
+              osPlatform === 'win32' ? '/c' : '-c',
+              [
+                'esbuild',
+                '--bundle',
+                `${sourceMap}`,
+                '--target=esnext',
+                '--platform=node',
+                '--format=esm',
+                '--external:@aws-appsync/utils',
+                `--outdir=${outputDir}`,
+                `${entryFile}`,
+              ].join(' '),
+            ],
+            {
+              env: { ...process.env },
+              stdio: [
+                // show output
+                'ignore', // ignore stdio
+                process.stderr, // redirect stdout to stderr
+                'inherit', // inherit stderr
+              ],
+              windowsVerbatimArguments: osPlatform === 'win32',
+            }
+          )
+
+          return true
+        },
+      },
+    },
+  })
 }
